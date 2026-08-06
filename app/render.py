@@ -850,7 +850,8 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
             label = f"{h12} {ampm}"
         else:
             label = f"{h:02d}"
-        draw.text((grid_x - max_label_w - label_rpad, y - _sz(14)), label, fill=GRAY_MID, font=hour_font)
+        draw.text((grid_x - max_label_w - label_rpad, y - _sz(14)), label, fill=BLACK, font=hour_font,
+                  stroke_width=1, stroke_fill=BLACK)
 
     # Column separators — thicker where month changes, extending up to header line
     sep_top = grid_y if compact_top else _sz(HEADER_H) - _sz(10)
@@ -896,15 +897,14 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
         line_y = _line_y
 
         if d == today:
-            # Today: solid black label cell, white text. Stroke (thicken glyphs)
-            # so white strokes stay >=2px and survive cleanly at native 1-bit.
+            # Today: solid black label cell, white text. No stroke — the render
+            # pipeline hard-thresholds to pure B/W, so AA edges are eliminated
+            # and the text is clean white on black without thickening.
             rect_top = label_top if compact_top else _sz(110)
             rect_bot = (label_top + label_h) if compact_top else grid_y
             draw.rectangle([x + 1, rect_top, x + col_w - 2, rect_bot], fill=BLACK)
-            draw.text((line_x, line_y), dow, fill=WHITE, font=dow_font,
-                      stroke_width=_font_stroke(dow_font), stroke_fill=WHITE)
-            draw.text((line_x + dw + gap, line_y), date_str, fill=WHITE, font=date_font,
-                      stroke_width=_font_stroke(date_font), stroke_fill=WHITE)
+            draw.text((line_x, line_y), dow, fill=WHITE, font=dow_font)
+            draw.text((line_x + dw + gap, line_y), date_str, fill=WHITE, font=date_font)
         else:
             draw.text((line_x, line_y), dow, fill=GRAY_DARK, font=dow_font)
             draw.text((line_x + dw + gap, line_y), date_str, fill=BLACK, font=date_font)
@@ -1101,11 +1101,10 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
                 if y + glyph_h > ey_bot - _S:
                     break  # No room below the overlapping card / card too short
                 if bw_mode and not is_dimmed:
-                    # White text on the black card — stroke scaled to the font so
-                    # strokes stay >=1px and render cleanly at native 1-bit across
-                    # the whole modifier range.
-                    draw.text((txt_x, y), text, fill=WHITE, font=fnt,
-                              stroke_width=_font_stroke(fnt), stroke_fill=WHITE)
+                    # White text on the black card — no stroke. The render
+                    # pipeline hard-thresholds to pure B/W so AA edges are
+                    # eliminated; stroke would just blob the glyphs.
+                    draw.text((txt_x, y), text, fill=WHITE, font=fnt)
                 elif bw_mode and is_dimmed:
                     # Finished/checkerboard event: black text with a WIDE white
                     # halo so it reads clearly over the 1px B/W checker fill.
@@ -1152,8 +1151,7 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
                 # Black bar with a 1px white border + white text (matches cards).
                 draw.rectangle([xl, ey, xr, ey + fd_h - _sz(2)], fill=BLACK,
                                outline=WHITE, width=max(1, _S))
-                draw.text((xl + _sz(8), ey + _sz(3)), display, fill=WHITE, font=fd_font,
-                          stroke_width=_font_stroke(fd_font), stroke_fill=WHITE)
+                draw.text((xl + _sz(8), ey + _sz(3)), display, fill=WHITE, font=fd_font)
             else:
                 draw.rounded_rectangle([xl, ey, xr, ey + fd_h - _sz(2)], radius=6,
                                        fill=GRAY_VLIGHT, outline=BLACK, width=2)
@@ -1279,8 +1277,7 @@ def _draw_time_pill(draw, x_right, y_center, text, font):
     # interior with white text: visible on both the white grid and black cards.
     draw.rectangle([bx0 - ring, by0 - ring, bx1 + ring, by1 + ring], fill=WHITE)
     draw.rectangle([bx0, by0, bx1, by1], fill=BLACK)
-    draw.text((bx0 + pad_x - bb[0], by0 + pad_y - bb[1]), text, fill=WHITE, font=font,
-              stroke_width=_font_stroke(font), stroke_fill=WHITE)
+    draw.text((bx0 + pad_x - bb[0], by0 + pad_y - bb[1]), text, fill=WHITE, font=font)
 
 
 # ---- Current-time line ----
