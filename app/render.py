@@ -915,27 +915,17 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
             is_past = dim_past_events and (d < today or (d == today and e_min <= now_min_total))
             is_dimmed = is_crossed or is_past
             if bw_mode:
-                # Black cards, white rounded 1px (→3px supersampled) border. The
-                # white border is visible on the black fill AND cleanly separates
-                # overlapping cards (which the user wants white on black).
-                fx0, fy0, fx1, fy1 = int(xl), int(ey_top), int(xr), int(ey_top + eh - 1)
-                bw_border = 4  # → ~1.3px after /3 downscale (reliably visible)
-                bw_radius = 12
-                draw.rounded_rectangle([fx0, fy0, fx1, fy1], radius=bw_radius, fill=BLACK,
-                                       outline=WHITE, width=bw_border)
+                # Black card with a ROUNDED white 1px border. Corners snapped to
+                # the supersample grid so every edge downscales to a uniform 1px
+                # (no extra pixel on the left/top), and the corners stay rounded.
+                fx0, fy0 = _snap(int(xl)), _snap(int(ey_top))
+                fx1, fy1 = _snap(int(xr)), _snap(int(ey_top + eh - 1))
+                draw.rounded_rectangle([fx0, fy0, fx1, fy1], radius=12, fill=BLACK,
+                                       outline=WHITE, width=_S)
                 if is_dimmed:
                     # Past/crossed → coarse checkerboard fill (survives downscale).
-                    _draw_checker(draw, fx0 + bw_border + 1, fy0 + bw_border + 1,
-                                  fx1 - bw_border - 1, fy1 - bw_border - 1, block=6)
-                # Overlapping card → bold white frame on ALL sides so every border
-                # (top/bottom/left/right) is clearly visible on the black fill; the
-                # thin rounded outline alone loses edges in the downscale.
-                if xl > x + 5:
-                    fw = 5  # ~1.7px out
-                    draw.rectangle([fx0, fy0, fx1, fy0 + fw], fill=WHITE)   # top
-                    draw.rectangle([fx0, fy1 - 3, fx1, fy1], fill=WHITE)    # bottom (1px)
-                    draw.rectangle([fx0, fy0, fx0 + fw, fy1], fill=WHITE)   # left
-                    draw.rectangle([fx1 - fw, fy0, fx1, fy1], fill=WHITE)   # right
+                    _draw_checker(draw, fx0 + _S + 1, fy0 + _S + 1,
+                                  fx1 - _S - 1, fy1 - _S - 1, block=6)
             elif is_crossed:
                 draw.rounded_rectangle([xl, ey_top, xr, ey_top + eh - 1], radius=6,
                                        fill=WHITE, outline=GRAY_DIM, width=2)
@@ -952,7 +942,7 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
             summary = ev.get("summary", "")
             time_str = _ev_time_str(ev, now, time_format)
             avail_w = xr - xl - 8
-            txt_x = xl + 10
+            txt_x = xl + 10 + _S  # +1px right (see y += _S below for +1px down)
 
             # Build ordered list of (text, font) lines; ("", None) = blank spacer
             # between groups (title / time / location / description). Location and
@@ -1005,7 +995,7 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
 
             line_h_sm = 26      # line height for the smaller location/description font
             GROUP_GAP = 10      # blank-spacer height (+2px over the old 4 → more title↔time air)
-            y = ey_top + 4
+            y = ey_top + 4 + _S  # +1px down (text nudged right+down inside the card)
             for text, fnt in render_lines:
                 if not text:
                     y += GROUP_GAP
@@ -1030,10 +1020,11 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
                     draw.text((txt_x, y), text, fill=WHITE, font=fnt,
                               stroke_width=2, stroke_fill=WHITE)
                 elif bw_mode and is_dimmed:
-                    # On the checkerboard: black text with a white halo (outline)
-                    # so it reads on both black and white checker cells.
+                    # Finished/checkerboard event: black text with a WIDE white
+                    # halo (expanded +3px from before) so it reads clearly over
+                    # the busy checker fill.
                     draw.text((txt_x, y), text, fill=BLACK, font=fnt,
-                              stroke_width=3, stroke_fill=WHITE)
+                              stroke_width=3 + 3 * _S, stroke_fill=WHITE)
                 else:
                     draw.text((txt_x, y), text, fill=text_fill, font=fnt)
                 y += lh
