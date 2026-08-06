@@ -1009,17 +1009,18 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
                     # Task 5: true 1px black/white checkerboard for finished/past
                     # events — block=1 at native draws alternating B/W pixels that
                     # read as ~50% grey and survive the hard threshold exactly.
-                    # Fill black first, then checker, then border ON TOP so the
-                    # white border is not eaten by the checker's white pixels.
+                    # Draw black fill + checker interior, then a SOLID white
+                    # rectangle border on top (not rounded — the rounded corners
+                    # were clipping the border on the top and left edges).
                     draw.rounded_rectangle([fx0, fy0, fx1, fy1], radius=_sz(12),
                                            fill=BLACK, outline=BLACK, width=border_w)
                     _draw_checker(draw, fx0 + border_w, fy0 + border_w,
                                   fx1 - border_w, fy1 - border_w, block=max(1, _sz(1)))
-                    # Re-draw the white border ON TOP of the checker so all four
-                    # sides are clearly visible (checker's white pixels were
-                    # merging with the border on top + left edges).
-                    draw.rounded_rectangle([fx0, fy0, fx1, fy1], radius=_sz(12),
-                                           fill=None, outline=WHITE, width=border_w)
+                    # Solid white border on all four sides (plain rectangle, no
+                    # rounding — the rounded corners left the top and left edges
+                    # without a visible border because the corner pixels fall
+                    # outside the rounded shape).
+                    draw.rectangle([fx0, fy0, fx1, fy1], outline=WHITE, width=border_w)
                 else:
                     draw.rounded_rectangle([fx0, fy0, fx1, fy1], radius=_sz(12),
                                            fill=BLACK, outline=WHITE, width=border_w)
