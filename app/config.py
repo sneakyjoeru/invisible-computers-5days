@@ -33,14 +33,15 @@ ASSETS_DIR = BASE_DIR / "assets"
 OUTPUT_W = int(os.environ.get("OUTPUT_W", "800"))
 OUTPUT_H = int(os.environ.get("OUTPUT_H", "480"))
 
-# ---- Render (supersampled) size ----
-# The shared render.py layout is tuned for a ~1404-tall, 4:3-ish canvas. We
-# render at 3x the output on the SAME 5:3 aspect as 800x480 (2400x1440 ≈ the
-# tuned height), then downscale /3 and threshold to 1-bit in mac_driver. This
-# reuses the proven card/text layout untouched, yields clean ~1px borders, and
-# avoids rescaling dozens of hardcoded pixel offsets. render.py reads these as
-# SCREEN_W/SCREEN_H.
-SUPERSAMPLE = int(os.environ.get("SUPERSAMPLE", "3"))
+# ---- Render size ----
+# Native 1-bit rendering: compose directly at the panel's 800x480 resolution.
+# SUPERSAMPLE=1 means SCREEN_W/H == OUTPUT_W/H and mac_driver only thresholds
+# (no LANCZOS downscale). 1px is literally 1px, so dotted lines, card borders,
+# and the finished-event 1px checkerboard are exact — no downscale averaging.
+# render.py scales its layout constants by _SCALE = SCREEN_H/1440 (the original
+# tuned-canvas height), so SUPERSAMPLE=3 still works as a fallback but the
+# production path is native. Override via env only for debugging.
+SUPERSAMPLE = int(os.environ.get("SUPERSAMPLE", "1"))
 SCREEN_W = OUTPUT_W * SUPERSAMPLE
 SCREEN_H = OUTPUT_H * SUPERSAMPLE
 

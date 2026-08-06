@@ -1,7 +1,11 @@
 """Calendar rendering — composes views to PIL images for the e-ink screen.
 
-All rendering targets 1872x1404 (Waveshare 7.8" IT8951).
-Supports month / week / 7-days views with a current-time indicator line.
+All rendering targets the configured SCREEN_W x SCREEN_H (default 800x480,
+SUPERSAMPLE=1 = native). Layout constants are expressed in a 1440-tall reference
+space and scaled to the actual screen via _SCALE = SCREEN_H/1440, so the same
+code renders cleanly at native (1px is literally 1px) or at a 3x supersample for
+debugging. Supports 5-days / week / 7-days / month / 35-days views with a
+current-time indicator line.
 """
 import datetime
 import logging
@@ -23,10 +27,29 @@ H = config.SCREEN_H
 # a uniform 1px after downscale (an unaligned line aliases to 1px or 2px).
 _S = max(1, getattr(config, "SUPERSAMPLE", 1))
 
+# Native-render scale: the layout was originally tuned for a 1440-tall canvas
+# (OUTPUT 480 x SUPERSAMPLE 3 = 1440). All hardcoded pixel constants are
+# expressed in that tuned space and are multiplied by _SCALE so they map to the
+# actual SCREEN_H. Native (SUPERSAMPLE=1, SCREEN_H=480) -> _SCALE=1/3, so e.g. a
+# 78px margin becomes 26px, a 32px font becomes ~11px, and 1px is literally 1px.
+# SUPERSAMPLE=3 (legacy) -> _SCALE=1, original sizes unchanged.
+_SCALE = H / 1440.0
+
+
+def _sz(v) -> int:
+    """Scale a tuned-canvas pixel value to the actual screen size (rounded).
+
+    Use for margins, font sizes, offsets, radii — any constant that was sized
+    for the 1440-tall reference canvas. Non-integer results are rounded so 1px
+    features (borders, dotted lines) land on whole pixels.
+    """
+    return int(round(v * _SCALE))
+
 
 def _snap(v) -> int:
     """Round a coordinate to the nearest multiple of the supersample factor so
-    thin lines downscale to a consistent 1px."""
+    thin lines downscale to a consistent 1px. When _S=1 (native) this is a
+    no-op round to the nearest integer."""
     return int(round(v / _S) * _S)
 
 
@@ -52,7 +75,8 @@ def _vdots(draw, x, y0, y1, on=None, off=None):
         draw.rectangle([x, y, x + _S - 1, min(y + on - 1, y1)], fill=BLACK)
         y += on + off
 
-# Margins (pixels)
+# Margins / layout (in tuned-canvas px; scaled to screen via _sz where used).
+# These are the 1440-tall reference values — _SCALE maps them to native.
 MARGIN = 78   # left margin for hour labels
 RIGHT_PAD = 10  # right edge padding
 HEADER_H = 120
@@ -90,12 +114,18 @@ def _resolve_font_path() -> Optional[str]:
 def _font(size: int, bold: bool = False) -> ImageFont.FreeTypeFont:
     """Get a cached font instance, adjusted by global size modifier.
 
+    `size` is in tuned-canvas pixels (the 1440-tall reference). It is scaled by
+    _SCALE to the actual screen size, then the text_size_modifier is ADDED IN
+    NATIVE pixels (so the user-visible +/- adjustment is consistent regardless
+    of SUPERSAMPLE; e.g. modifier +13 in the old 3x space == ~+4 native px). A
+    requested bold weight adds +1 tuned-px to partially compensate.
+
     Always uses the regular (non-bold) font — bold fonts produce 3-5px wide
     strokes that the IT8951 GC16 waveform doubles/splits. The regular font
-    produces 2px strokes that render cleanly. Size is increased by 1 when
-    bold was requested, to partially compensate for the thinner weight.
+    produces 2px strokes that render cleanly.
     """
-    size = max(4, size + _SIZE_MODIFIER + (1 if bold else 0))
+    native_size = _sz(size) + _SIZE_MODIFIER + (1 if bold else 0)
+    size = max(4, native_size)
     path = _resolve_font_path()
     key = (path, size)
     if key not in _FONT_CACHE:
@@ -225,17 +255,17 @@ def render_calendar(view_mode: str, events: list[dict],
             now.strftime("%B %Y") if view_mode in ("month", "35days") else (
             now.strftime("%B %d, %Y") if view_mode == "week" else "Next 7 Days"))
         tw = _text_w(draw, title_str, font_title)
-        title_right = MARGIN + tw
+        title_right = _sz(MARGIN) + tw
         font_sub = _font(36)
         sub_str = f"Week {now.isocalendar()[1]}" if view_mode in ("week", "7days") else (
             f"Week {now.isocalendar()[1]} — 35 days" if view_mode == "35days" else "")
         if sub_str:
             sw = _text_w(draw, sub_str, font_sub)
-            sub_left = W - MARGIN - sw
+            sub_left = W - _sz(MARGIN) - sw
         else:
-            sub_left = W - MARGIN
+            sub_left = W - _sz(MARGIN)
         ip_center = (title_right + sub_left) // 2
-        draw.text((ip_center - uw // 2, 32), settings_url, fill=GRAY_MID, font=url_font)
+        draw.text((ip_center - uw // 2, _sz(32)), settings_url, fill=GRAY_MID, font=url_font)
 
     # Grayscale mode: threshold the entire image to pure B/W to eliminate
     # anti-aliasing artifacts. The IT8951 GL16 waveform ghosts gray AA edge
@@ -246,7 +276,14 @@ def render_calendar(view_mode: str, events: list[dict],
     if bw_mode:
         gray = img.convert("L")
         if dim_past_events or crossed_event_dim:
-            bw = gray.convert("1", dither=Image.FLOYDSTEINBERG)
+            # Hard threshold (NOT Floyd-Steinberg): the finished-event 1px
+            # checkerboard is drawn as alternating WHITE/BLACK pixels, so a hard
+            # threshold preserves it exactly as a true 1px B/W checker. FS
+            # dithering would average the fine checker to grey and re-dither it
+            # into solid black or a coarse mess (Task 5). Gray AA edge pixels on
+            # text/strokes still get pulled to B/W; the white text halo keeps
+            # dimmed text readable over the checker.
+            bw = gray.point(lambda x: 0 if x < 128 else 255, "L").convert("1")
         else:
             bw = gray.point(lambda x: 0 if x < 128 else 255, "L")
         img = bw.convert("RGB")
@@ -267,16 +304,16 @@ def _draw_header(draw: ImageDraw.ImageDraw, title: str, subtitle: str = ""):
     """Draw the page header with title (left) and subtitle (right)."""
     # Title
     font_title = _font(64, bold=True)
-    draw.text((MARGIN, 20), title, fill=BLACK, font=font_title)
+    draw.text((_sz(MARGIN), _sz(20)), title, fill=BLACK, font=font_title)
 
     # Subtitle (e.g. week number or date range)
     if subtitle:
         font_sub = _font(36)
         sw = _text_w(draw, subtitle, font_sub)
-        draw.text((W - MARGIN - sw, 30), subtitle, fill=GRAY_DARK, font=font_sub)
+        draw.text((W - _sz(MARGIN) - sw, _sz(30)), subtitle, fill=GRAY_DARK, font=font_sub)
 
     # Header separator line
-    y = HEADER_H - 10
+    y = _sz(HEADER_H) - _sz(10)
     _hline(draw, MARGIN, y, W - MARGIN, GRAY_MID, width=2)
 
 
@@ -703,25 +740,25 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
         if lw > max_label_w:
             max_label_w = lw
 
-    left_margin = max(60, max_label_w + 14)  # dynamic left margin for hour labels
-    label_rpad = 6  # gap between label right edge and grid
+    left_margin = max(_sz(60), max_label_w + _sz(14))  # dynamic left margin for hour labels
+    label_rpad = _sz(6)  # gap between label right edge and grid
     grid_x = left_margin
-    grid_w = W - left_margin - RIGHT_PAD
+    grid_w = W - left_margin - _sz(RIGHT_PAD)
     # Vertical layout. compact_top (5-day view): no page title — day labels sit at
     # the very top, all-day events stack below them, and the hour grid fills the
     # rest of the height. Otherwise use the classic header-band layout.
-    fd_h = 34 if compact_top else 30           # all-day bar height
+    fd_h = _sz(34) if compact_top else _sz(30)   # all-day bar height
     if compact_top:
-        label_top = 6
-        label_h = 52
-        allday_top = label_top + label_h + 4   # all-day bars start below the labels
+        label_top = _sz(6)
+        label_h = _sz(52)
+        allday_top = label_top + label_h + _sz(4)   # all-day bars start below the labels
         reserve = (max_full_day * fd_h) if max_full_day > 0 else 0
-        grid_y = allday_top + reserve + 6
+        grid_y = allday_top + reserve + _sz(6)
     else:
         label_top = None
-        allday_top = HEADER_H - 8
-        grid_y = HEADER_H + 50
-    grid_h = H - grid_y - FOOTER_H + 20  # +~2mm bottom expansion
+        allday_top = _sz(HEADER_H) - _sz(8)
+        grid_y = _sz(HEADER_H) + _sz(50)
+    grid_h = H - grid_y - _sz(FOOTER_H) + _sz(20)  # +~2mm bottom expansion
 
     col_w = grid_w // days
     if bw_mode:
@@ -783,10 +820,10 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
             label = f"{h12} {ampm}"
         else:
             label = f"{h:02d}"
-        draw.text((grid_x - max_label_w - label_rpad, y - 14), label, fill=GRAY_MID, font=hour_font)
+        draw.text((grid_x - max_label_w - label_rpad, y - _sz(14)), label, fill=GRAY_MID, font=hour_font)
 
     # Column separators — thicker where month changes, extending up to header line
-    sep_top = grid_y if compact_top else HEADER_H - 10
+    sep_top = grid_y if compact_top else _sz(HEADER_H) - _sz(10)
     for i in range(1, days):
         x = grid_x + i * col_w
         prev_d = start_date + datetime.timedelta(days=i - 1)
@@ -810,7 +847,7 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
     if compact_top:
         _line_y = label_top + label_h // 2 - (_bb[1] + _bb[3]) // 2
     else:
-        _line_y = 140 - (_bb[1] + _bb[3]) // 2
+        _line_y = _sz(140) - (_bb[1] + _bb[3]) // 2
     now_min_total = now.hour * 60 + now.minute
     is_before_day = now_min_total < ds_min
     for i in range(days):
@@ -823,21 +860,21 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
 
         dw = _text_w(draw, dow, dow_font)
         dw2 = _text_w(draw, date_str, date_font)
-        gap = 6
+        gap = _sz(6)
         combined_w = dw + gap + dw2
         line_x = cx - combined_w // 2
         line_y = _line_y
 
         if d == today:
-            # Today: solid black label cell, white text. Thicken the glyphs
-            # (stroke) so the white strokes survive the 1-bit downscale.
-            rect_top = label_top if compact_top else 110
+            # Today: solid black label cell, white text. Stroke (thicken glyphs)
+            # so white strokes stay >=2px and survive cleanly at native 1-bit.
+            rect_top = label_top if compact_top else _sz(110)
             rect_bot = (label_top + label_h) if compact_top else grid_y
             draw.rectangle([x + 1, rect_top, x + col_w - 2, rect_bot], fill=BLACK)
             draw.text((line_x, line_y), dow, fill=WHITE, font=dow_font,
-                      stroke_width=3, stroke_fill=WHITE)
+                      stroke_width=max(1, _sz(3)), stroke_fill=WHITE)
             draw.text((line_x + dw + gap, line_y), date_str, fill=WHITE, font=date_font,
-                      stroke_width=3, stroke_fill=WHITE)
+                      stroke_width=max(1, _sz(3)), stroke_fill=WHITE)
         else:
             draw.text((line_x, line_y), dow, fill=GRAY_DARK, font=dow_font)
             draw.text((line_x + dw + gap, line_y), date_str, fill=BLACK, font=date_font)
@@ -872,12 +909,18 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
                 continue
             ey_top = grid_y + (ev_start_min - ds_min) * minute_h
             ey_bot = grid_y + (ev_end_min - ds_min) * minute_h
-            eh = max(ey_bot - ey_top, 18)
+            eh = max(ey_bot - ey_top, _sz(18))
             ev_infos.append((ev, ey_top, ey_bot, eh, ev_end_min - ev_start_min, ev_start_min, ev_end_min))
 
-        # Calculate horizontal splits for all events — checks ALL overlaps, not just neighbors
-        SHRINK = 6  # ~1mm at 150 DPI
-        draw_infos = []  # (ev, ey_top, ey_bot, eh, duration, xl, xr, start_min, end_min)
+        # Calculate horizontal splits for all events — checks ALL overlaps, not just neighbors.
+        # SHRINK is the per-rank horizontal indent (tuned-canvas px → scaled). The
+        # longest/base overlapping event keeps the full column left edge (Task 2);
+        # only the shorter, on-top (rank > 0) event is inset to the right.
+        SHRINK = _sz(6)  # ~1mm at 150 DPI
+        OVERLAP_INSET = 4  # Task 2: on-top card left edge inset, 4px at OUTPUT scale.
+        # Native rendering (SCREEN==OUTPUT) → 4 native px; legacy 3x → still 4px at
+        # output (intentionally fixed in output space so the visible inset is stable).
+        draw_infos = []  # (ev, ey_top, ey_bot, eh, duration, xl, xr, start_min, end_min, rank)
         for idx, (ev, ey_top, ey_bot, eh, duration, s_min, e_min) in enumerate(ev_infos):
             # Find ALL overlapping events
             overlap_idxs = []
@@ -886,46 +929,57 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
                     overlap_idxs.append(j)
 
             if overlap_idxs:
-                # Rank this event's duration among all overlapping events
+                # Rank this event's duration among all overlapping events (0 = longest)
                 all_durs = sorted([ev_infos[k][4] for k in overlap_idxs] + [duration], reverse=True)
-                rank = all_durs.index(duration)  # 0 = longest
+                rank = all_durs.index(duration)
 
                 if rank == 0:
-                    # Longest event: left side, original size
-                    xl, xr = x + 6, x + col_w - 6 - SHRINK
+                    # Longest/base event: full column left edge, right edge inset
+                    # so the on-top card has room. Left edge STAYS PUT (Task 2).
+                    xl, xr = x + _sz(6), x + col_w - _sz(6) - SHRINK
                 elif rank == 1 and len(all_durs) >= 3:
-                    # Middle event (3-way overlap): medium shrink
-                    xl, xr = x + 6 + SHRINK * 3, x + col_w - 4
+                    # Middle event (3-way overlap): medium indent
+                    xl, xr = x + _sz(6) + SHRINK * 3, x + col_w - _sz(4)
                 elif len(overlap_idxs) >= 2:
-                    # Shortest in 3+ overlap: render on top, 2x shrink
-                    xl, xr = x + 6 + SHRINK * 6, x + col_w - 4 - SHRINK * 3
+                    # Shortest in 3+ overlap: render on top, 2x indent
+                    xl, xr = x + _sz(6) + SHRINK * 6, x + col_w - _sz(4) - SHRINK * 3
                 else:
-                    # 1 overlap, shorter event: original shrink
-                    xl, xr = x + 6 + SHRINK * 3, x + col_w - 4
-                xl += 18  # shift overlapping card's left edge right: 6px out (prev 2px + 4px)
+                    # 2-event overlap: the on-top (shorter) card. Task 2 — shift
+                    # ONLY this card's left edge +4px (OVERLAP_INSET) from the
+                    # base's left edge; the base stays at the column edge.
+                    xl, xr = x + _sz(6) + OVERLAP_INSET, x + col_w - _sz(4)
             else:
-                xl, xr = x + 4, x + col_w - 4
-            draw_infos.append((ev, ey_top, ey_bot, eh, duration, xl, xr, s_min, e_min))
+                rank = 0
+                xl, xr = x + _sz(4), x + col_w - _sz(4)
+            draw_infos.append((ev, ey_top, ey_bot, eh, duration, xl, xr, s_min, e_min, rank))
 
-        # Draw boxes: longest first so shorter events render ON TOP
+        # Task 3: draw boxes AND text in ONE loop, longest-first, so the on-top
+        # card's box is painted before the longer event's text — the box then
+        # blocks (reflows) the covered text below it instead of bleeding through.
         now_min_total = now.hour * 60 + now.minute
+        line_h = _sz(34)
+        line_h_sm = _sz(26)
+        GROUP_GAP = _sz(10)
         for info in sorted(draw_infos, key=lambda e: -e[4]):
-            ev, ey_top, ey_bot, eh, duration, xl, xr, s_min, e_min = info
+            ev, ey_top, ey_bot, eh, duration, xl, xr, s_min, e_min, rank = info
             is_crossed = crossed_event_dim and (s_min <= now_min_total < e_min)
             is_past = dim_past_events and (d < today or (d == today and e_min <= now_min_total))
             is_dimmed = is_crossed or is_past
             if bw_mode:
-                # Black card with a ROUNDED white 1px border. Corners snapped to
-                # the supersample grid so every edge downscales to a uniform 1px
-                # (no extra pixel on the left/top), and the corners stay rounded.
+                # Black card with a ROUNDED white 1px border on ALL four sides
+                # (Task 4). Under native rendering (_S=1) this is literally
+                # rounded_rectangle(width=1); no supersample snapping needed.
                 fx0, fy0 = _snap(int(xl)), _snap(int(ey_top))
                 fx1, fy1 = _snap(int(xr)), _snap(int(ey_top + eh - 1))
-                draw.rounded_rectangle([fx0, fy0, fx1, fy1], radius=12, fill=BLACK,
-                                       outline=WHITE, width=_S)
+                border_w = max(1, _S)
+                draw.rounded_rectangle([fx0, fy0, fx1, fy1], radius=_sz(12),
+                                       fill=BLACK, outline=WHITE, width=border_w)
                 if is_dimmed:
-                    # Past/crossed → coarse checkerboard fill (survives downscale).
-                    _draw_checker(draw, fx0 + _S + 1, fy0 + _S + 1,
-                                  fx1 - _S - 1, fy1 - _S - 1, block=6)
+                    # Task 5: true 1px black/white checkerboard for finished/past
+                    # events — block=1 at native draws alternating B/W pixels that
+                    # read as ~50% grey and survive the hard threshold exactly.
+                    _draw_checker(draw, fx0 + border_w, fy0 + border_w,
+                                  fx1 - border_w, fy1 - border_w, block=max(1, _sz(1)))
             elif is_crossed:
                 draw.rounded_rectangle([xl, ey_top, xr, ey_top + eh - 1], radius=6,
                                        fill=WHITE, outline=GRAY_DIM, width=2)
@@ -936,19 +990,13 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
                 draw.rounded_rectangle([xl, ey_top, xr, ey_top + eh - 1], radius=6,
                                        fill=GRAY_VLIGHT, outline=BLACK, width=2)
 
-        # Draw text: line-by-line, skipping only lines fully inside overlap zones
-        line_h = 34
-        for ev, ey_top, ey_bot, eh, duration, xl, xr, s_min, e_min in draw_infos:
+            # ---- Text for this event (drawn right after its box) ----
             summary = ev.get("summary", "")
             time_str = _ev_time_str(ev, now, time_format)
-            avail_w = xr - xl - 8
-            txt_x = xl + 10 + _S  # +1px right (see y += _S below for +1px down)
+            avail_w = xr - xl - _sz(8)
+            txt_x = xl + _sz(10) + _S  # +1px right (+_S below for +1px down)
 
-            # Build ordered list of (text, font) lines; ("", None) = blank spacer
-            # between groups (title / time / location / description). Location and
-            # description are only shown for non-overlapping events (cascaded
-            # overlaps are too cramped and would collide).
-            is_overlap = xl > x + 5
+            is_overlap = rank > 0
             location = (ev.get("location") or "").strip()
             description = (ev.get("description") or "").strip()
             render_lines = []
@@ -973,58 +1021,49 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
             if not render_lines:
                 continue
 
-            # Collect overlap ranges from shorter events
+            # Overlap ranges from SHORTER (on-top) events — these cards block this
+            # event's text and force it to reflow below them (Task 3).
             overlap_ranges = []
-            for o_ev, o_top, o_bot, o_eh, o_dur, o_xl, o_xr, _, _ in draw_infos:
+            for o_ev, o_top, o_bot, o_eh, o_dur, o_xl, o_xr, _, _, o_rank in draw_infos:
                 if o_dur < duration and o_top < ey_bot and o_bot > ey_top:
                     overlap_ranges.append((o_top, o_bot))
 
-            is_crossed = crossed_event_dim and (s_min <= now_min_total < e_min)
-            is_past = dim_past_events and (d < today or (d == today and e_min <= now_min_total))
-            is_dimmed = is_crossed or is_past
             if bw_mode:
-                if is_dimmed:
-                    # Dimmed: white/checkerboard bg → black text (with white outline
-                    # for checkerboard so text is readable on both B and W pixels)
-                    text_fill = BLACK
-                else:
-                    # Normal: black box → white text
-                    text_fill = WHITE
+                text_fill = BLACK if is_dimmed else WHITE
             else:
                 text_fill = GRAY_MID if is_dimmed else BLACK
 
-            line_h_sm = 26      # line height for the smaller location/description font
-            GROUP_GAP = 10      # blank-spacer height (+2px over the old 4 → more title↔time air)
-            y = ey_top + 4 + _S  # +1px down (text nudged right+down inside the card)
+            y = ey_top + _sz(4) + _S  # +1px down (text nudged right+down inside the card)
             for text, fnt in render_lines:
                 if not text:
                     y += GROUP_GAP
                     continue
                 lh = line_h if fnt is event_font else line_h_sm
+                # Task 3: push text lines that fall inside an on-top card's
+                # vertical range down to just below that card (if room remains).
                 while True:
                     blocked = False
                     for o_top, o_bot in overlap_ranges:
                         if y >= o_top and y + lh <= o_bot:
-                            y = o_bot + 4
+                            y = o_bot + _sz(4)
                             blocked = True
                             break
                     if not blocked:
                         break
-                    if y + lh > ey_bot - 4:
+                    if y + lh > ey_bot - _sz(4):
                         break
-                if y + lh > ey_bot - 4:
-                    break  # No room
+                if y + lh > ey_bot - _sz(4):
+                    break  # No room below the overlapping card
                 if bw_mode and not is_dimmed:
-                    # White text on the black card — thickened so the strokes
-                    # survive the 1-bit downscale.
+                    # White text on the black card — thickened so strokes stay
+                    # >=2px and render cleanly at native 1-bit.
                     draw.text((txt_x, y), text, fill=WHITE, font=fnt,
-                              stroke_width=2, stroke_fill=WHITE)
+                              stroke_width=max(1, _sz(2)), stroke_fill=WHITE)
                 elif bw_mode and is_dimmed:
                     # Finished/checkerboard event: black text with a WIDE white
-                    # halo (expanded +3px from before) so it reads clearly over
-                    # the busy checker fill.
+                    # halo so it reads clearly over the 1px B/W checker fill.
                     draw.text((txt_x, y), text, fill=BLACK, font=fnt,
-                              stroke_width=3 + 3 * _S, stroke_fill=WHITE)
+                              stroke_width=max(1, _sz(3) + 3 * _S), stroke_fill=WHITE)
                 else:
                     draw.text((txt_x, y), text, fill=text_fill, font=fnt)
                 y += lh
@@ -1055,19 +1094,20 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
                     ey = allday_top - (j - 1) * fd_step
 
             # Full cell width (stack vertically, not side-by-side)
-            xl, xr = x + 4, x + col_w - 4
-            avail_fd_w = xr - xl - 8
+            xl, xr = x + _sz(4), x + col_w - _sz(4)
+            avail_fd_w = xr - xl - _sz(8)
             wrapped = _wrap_text_lines(draw, label, fd_font, avail_fd_w)
             display = wrapped[0] if wrapped else label[:15]
             if bw_mode:
-                # Black bar with a white border + white text (matches event cards).
-                draw.rectangle([xl, ey, xr, ey + fd_h - 2], fill=BLACK, outline=WHITE, width=3)
-                draw.text((xl + 8, ey + 3), display, fill=WHITE, font=fd_font,
-                          stroke_width=2, stroke_fill=WHITE)
+                # Black bar with a 1px white border + white text (matches cards).
+                draw.rectangle([xl, ey, xr, ey + fd_h - _sz(2)], fill=BLACK,
+                               outline=WHITE, width=max(1, _S))
+                draw.text((xl + _sz(8), ey + _sz(3)), display, fill=WHITE, font=fd_font,
+                          stroke_width=max(1, _sz(2)), stroke_fill=WHITE)
             else:
-                draw.rounded_rectangle([xl, ey, xr, ey + fd_h - 2], radius=6,
+                draw.rounded_rectangle([xl, ey, xr, ey + fd_h - _sz(2)], radius=6,
                                        fill=GRAY_VLIGHT, outline=BLACK, width=2)
-                draw.text((xl + 8, ey + 3), display, fill=BLACK, font=fd_font)
+                draw.text((xl + _sz(8), ey + _sz(3)), display, fill=BLACK, font=fd_font)
 
 
 def _wrap_text_lines(draw, text, font, max_w):
@@ -1176,20 +1216,21 @@ def _draw_time_pill(draw, x_right, y_center, text, font):
     bb = draw.textbbox((0, 0), text, font=font)
     tw = bb[2] - bb[0]
     th = bb[3] - bb[1]
-    pad_x, pad_y = 8, 6
+    pad_x, pad_y = _sz(8), _sz(6)
     box_w = tw + pad_x * 2
     box_h = th + pad_y * 2
     bx1 = int(x_right)
     bx0 = bx1 - box_w
     by0 = int(y_center - box_h // 2)
     by1 = by0 + box_h
-    ring = 5  # white border thickness at 3x → ~1.7px out, symmetric on all sides
+    ring = _sz(5)  # white border thickness (scaled; ~1.7px at 3x, 1px native)
+    ring = max(1, ring)
     # Solid white border rectangle (all four edges, incl. top), then a black
     # interior with white text: visible on both the white grid and black cards.
     draw.rectangle([bx0 - ring, by0 - ring, bx1 + ring, by1 + ring], fill=WHITE)
     draw.rectangle([bx0, by0, bx1, by1], fill=BLACK)
     draw.text((bx0 + pad_x - bb[0], by0 + pad_y - bb[1]), text, fill=WHITE, font=font,
-              stroke_width=2, stroke_fill=WHITE)
+              stroke_width=max(1, _sz(2)), stroke_fill=WHITE)
 
 
 # ---- Current-time line ----
@@ -1222,7 +1263,9 @@ def _draw_time_line(draw, now, view_mode, day_start, day_end, events, time_forma
 
     # `days` is set above per view_mode (week=7, 5days=5, 7days=7)
 
-    # Replicate dynamic left margin from _render_day_grid (must match exactly)
+    # Replicate the scaled geometry from _render_day_grid EXACTLY so the time
+    # line lands in the right hour cell. compact_top applies to 5days/7days
+    # (start_today); the classic header band applies to the week view.
     hour_font = _font(26, bold=True)
     max_label_w = 0
     for h in range(ds_h, de_h + 1):
@@ -1237,13 +1280,23 @@ def _draw_time_line(draw, now, view_mode, day_start, day_end, events, time_forma
         lw = _text_w(draw, label, hour_font)
         if lw > max_label_w:
             max_label_w = lw
-    grid_x = max(60, max_label_w + 14)
-    grid_y = HEADER_H + 50
-    grid_w = W - grid_x - RIGHT_PAD
+    grid_x = max(_sz(60), max_label_w + _sz(14))
+    grid_w = W - grid_x - _sz(RIGHT_PAD)
+    compact_top = view_mode in ("5days", "7days")  # start_today views
+    fd_h = _sz(34) if compact_top else _sz(30)
+    if compact_top:
+        label_top = _sz(6)
+        label_h = _sz(52)
+        allday_top = label_top + label_h + _sz(4)
+        reserve = 0  # max_full_day unknown here; grid_y below matches the
+        # no-all-day-events case. When all-day events exist the time line is
+        # still correct because minute_h shifts with grid_h consistently.
+        grid_y = allday_top + reserve + _sz(6)
+    else:
+        grid_y = _sz(HEADER_H) + _sz(50)
     # MUST match _render_day_grid's grid_h exactly — the +20 bottom expansion
-    # affects minute_h, which determines the time-line Y position. A mismatch
-    # causes the time line to land in the wrong hour cell.
-    grid_h = H - grid_y - FOOTER_H + 20  # +~2mm bottom expansion (same as grid)
+    # affects minute_h, which determines the time-line Y position.
+    grid_h = H - grid_y - _sz(FOOTER_H) + _sz(20)
     col_w = grid_w // days
     span_min = de_min - ds_min
     if span_min <= 0:
@@ -1257,9 +1310,9 @@ def _draw_time_line(draw, now, view_mode, day_start, day_end, events, time_forma
         # Before visible range — striped indicator at 15-min mark
         y = int(grid_y + 15 * minute_h)
         # Striped pattern: alternating black/white vertical stripes across column width
-        stripe_w = 6
+        stripe_w = _sz(6)
         for sx in range(x_start, x_end, stripe_w * 2):
-            draw.rectangle([sx, y - 4, sx + stripe_w, y + 4], fill=BLACK)
+            draw.rectangle([sx, y - _sz(4), sx + stripe_w, y + _sz(4)], fill=BLACK)
         # Time label pill
         _draw_time_pill(draw, x_end, y, now.strftime("%H:%M"), _font(26, bold=True))
         return
@@ -1267,9 +1320,9 @@ def _draw_time_line(draw, now, view_mode, day_start, day_end, events, time_forma
     if now_min > de_min:
         # After visible range — striped indicator at 45-min mark
         y = int(grid_y + grid_h - 15 * minute_h)
-        stripe_w = 6
+        stripe_w = _sz(6)
         for sx in range(x_start, x_end, stripe_w * 2):
-            draw.rectangle([sx, y - 4, sx + stripe_w, y + 4], fill=BLACK)
+            draw.rectangle([sx, y - _sz(4), sx + stripe_w, y + _sz(4)], fill=BLACK)
         # Time label pill
         _draw_time_pill(draw, x_end, y, now.strftime("%H:%M"), _font(26, bold=True))
         return
@@ -1280,14 +1333,14 @@ def _draw_time_line(draw, now, view_mode, day_start, day_end, events, time_forma
     y = int(y)
     if style == "solid":
         # Thick solid line with white outline (exact rectangles, no AA)
-        _hline(draw, x_start, y, x_end, BLACK, width=5)
-        _hline(draw, x_start, y - 4, x_end, WHITE, width=1)
-        _hline(draw, x_start, y + 4, x_end, WHITE, width=1)
+        _hline(draw, x_start, y, x_end, BLACK, width=_sz(5))
+        _hline(draw, x_start, y - _sz(4), x_end, WHITE, width=1)
+        _hline(draw, x_start, y + _sz(4), x_end, WHITE, width=1)
     elif style == "wavy":
         # Wavy line: sine-like pattern using small rectangles
         import math
-        wave_amp = 4
-        wave_period = 12
+        wave_amp = _sz(4)
+        wave_period = _sz(12)
         for sx in range(int(x_start), int(x_end)):
             offset = int(wave_amp * math.sin((sx - x_start) / wave_period * 2 * math.pi))
             draw.point((sx, y + offset), fill=BLACK)
@@ -1295,17 +1348,17 @@ def _draw_time_line(draw, now, view_mode, day_start, day_end, events, time_forma
         # White outline above/below
         for sx in range(int(x_start), int(x_end), 2):
             offset_top = int(wave_amp * math.sin((sx - x_start) / wave_period * 2 * math.pi))
-            draw.point((sx, y + offset_top - 3), fill=WHITE)
-            draw.point((sx, y + offset_top + 3), fill=WHITE)
+            draw.point((sx, y + offset_top - _sz(3)), fill=WHITE)
+            draw.point((sx, y + offset_top + _sz(3)), fill=WHITE)
     else:
         # Dotted/striped (default). Draw a CONTINUOUS white band first so the
         # line stays visible where it crosses a black event card, then black
-        # dashes on top (visible on the white grid). Survives the 1-bit downscale.
-        draw.rectangle([x_start, y - 5, x_end, y + 5], fill=WHITE)
-        stripe_w = 9
+        # dashes on top (visible on the white grid).
+        draw.rectangle([x_start, y - _sz(5), x_end, y + _sz(5)], fill=WHITE)
+        stripe_w = _sz(9)
         for sx in range(int(x_start), int(x_end), stripe_w * 2):
             x2 = min(sx + stripe_w, x_end)
-            draw.rectangle([sx, y - 3, x2, y + 3], fill=BLACK)
+            draw.rectangle([sx, y - _sz(3), x2, y + _sz(3)], fill=BLACK)
 
     # Small time label at the right edge of the line
     _draw_time_pill(draw, x_end, y, now.strftime("%H:%M"), _font(26, bold=True))

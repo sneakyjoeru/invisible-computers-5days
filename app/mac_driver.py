@@ -1,13 +1,16 @@
-"""Image "driver" for the headless Mac instance.
+"""Image "driver" for the headless instance.
 
 There is no e-ink panel or SPI on this machine — the deliverable is the final
-image file. This module takes the supersampled PIL image from render.py, scales
-it down to the panel's native resolution (OUTPUT_W x OUTPUT_H), and thresholds
-it to a true 1-bit black/white PNG that the 800x480 device fetches from /image.
+image file. render.py composes the layout at the panel's native resolution
+(OUTPUT_W x OUTPUT_H = 800x480 by default; SUPERSAMPLE=1). This module thresholds
+the rendered image to a true 1-bit black/white PNG that the 800x480 device
+fetches from /image.
 
-Downscaling is done in grayscale with LANCZOS, then thresholded — so 1px lines
-drawn at 3x survive as clean ~1px lines at native resolution (a single black
-row within a 3-row block averages to ~170 and stays below the threshold).
+When SUPERSAMPLE=1 (default, native) the image is already at target size, so no
+resize happens — only the L->1-bit threshold. When SUPERSAMPLE>1 (legacy debug)
+the supersampled image is LANCZOS-downscaled to OUTPUT x OUTPUT first, then
+thresholded. Native rendering keeps 1px features (borders, dotted lines, the
+finished-event 1px checkerboard) exact — no downscale averaging.
 """
 import logging
 import os
