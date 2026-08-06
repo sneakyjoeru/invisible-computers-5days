@@ -146,6 +146,36 @@ def _text_h(draw: ImageDraw.ImageDraw, text: str, font) -> int:
     return bbox[3] - bbox[1]
 
 
+def _font_size(font) -> int:
+    """The font's actual rendered pixel size (the size it was created with)."""
+    try:
+        return font.size
+    except AttributeError:  # PIL default font
+        return 10
+
+
+def _font_line_h(font) -> int:
+    """Line height derived from the font's actual metrics, so text stays readable
+    across text_size_modifier 0-10. Uses ascent+descent + 1px leading (min 9px)
+    — instead of a fixed tuned-canvas constant that doesn't scale with the
+    modifier. At modifier 0 this gives comfortable leading for ~8-11px text; at
+    modifier 10 it grows with the ~18-21px glyphs so lines never overlap."""
+    try:
+        asc, desc = font.getmetrics()
+        return max(9, asc + desc + 1)
+    except Exception:
+        return max(9, _font_size(font) + 2)
+
+
+def _font_stroke(font, base: int = 2) -> int:
+    """Stroke width scaled to the font's actual size so white-on-black text stays
+    bold enough to survive 1-bit at large modifiers, and doesn't blob at small
+    ones. base is the tuned-canvas px reference (~2)."""
+    sz = _font_size(font)
+    # ~sz/8, clamped to >=1; at native base sizes (8-21px) this is 1-2px.
+    return max(1, max(base, sz // 8))
+
+
 # ---- Exact (non-antialiased) drawing helpers for b/w mode ----
 def _hline(draw, x0: int, y: int, x1: int, fill, width: int = 1):
     """Draw a horizontal line using rectangle fill (no PIL line AA)."""
@@ -747,7 +777,7 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
     # Vertical layout. compact_top (5-day view): no page title — day labels sit at
     # the very top, all-day events stack below them, and the hour grid fills the
     # rest of the height. Otherwise use the classic header-band layout.
-    fd_h = _sz(34) if compact_top else _sz(30)   # all-day bar height
+    fd_h = max(_sz(34) if compact_top else _sz(30), _font_line_h(_font(24)) + _sz(2))   # all-day bar height (grows with text size so it never clips)
     if compact_top:
         label_top = _sz(6)
         label_h = _sz(52)
@@ -872,9 +902,9 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
             rect_bot = (label_top + label_h) if compact_top else grid_y
             draw.rectangle([x + 1, rect_top, x + col_w - 2, rect_bot], fill=BLACK)
             draw.text((line_x, line_y), dow, fill=WHITE, font=dow_font,
-                      stroke_width=max(1, _sz(3)), stroke_fill=WHITE)
+                      stroke_width=_font_stroke(dow_font), stroke_fill=WHITE)
             draw.text((line_x + dw + gap, line_y), date_str, fill=WHITE, font=date_font,
-                      stroke_width=max(1, _sz(3)), stroke_fill=WHITE)
+                      stroke_width=_font_stroke(date_font), stroke_fill=WHITE)
         else:
             draw.text((line_x, line_y), dow, fill=GRAY_DARK, font=dow_font)
             draw.text((line_x + dw + gap, line_y), date_str, fill=BLACK, font=date_font)
@@ -957,9 +987,13 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
         # card's box is painted before the longer event's text — the box then
         # blocks (reflows) the covered text below it instead of bleeding through.
         now_min_total = now.hour * 60 + now.minute
-        line_h = _sz(34)
-        line_h_sm = _sz(26)
-        GROUP_GAP = _sz(10)
+        # Line heights derived from the ACTUAL font metrics so text stays readable
+        # across text_size_modifier 0-10 (fixed _sz() constants left zero leading
+        # at 0 and overlapping lines at 10).
+        line_h = _font_line_h(event_font)
+        line_h_sm = _font_line_h(event_font_sm)
+        GROUP_GAP = max(4, line_h_sm // 2)  # blank-spacer scales with text size
+        TEXT_PAD = max(2, line_h // 4)      # top padding inside card scales too
         for info in sorted(draw_infos, key=lambda e: -e[4]):
             ev, ey_top, ey_bot, eh, duration, xl, xr, s_min, e_min, rank = info
             is_crossed = crossed_event_dim and (s_min <= now_min_total < e_min)
@@ -1033,12 +1067,20 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
             else:
                 text_fill = GRAY_MID if is_dimmed else BLACK
 
-            y = ey_top + _sz(4) + _S  # +1px down (text nudged right+down inside the card)
+            # Per-card text padding: shrink when the card is short so a single
+            # title line can still fit (touching the borders) instead of clipping
+            # or overflowing into the next cell. Keeps text readable for short
+            # (e.g. 30-min) events across the whole modifier 0-10 range.
+            card_text_h = ey_bot - ey_top - 2 * _S  # interior between borders
+            pad = TEXT_PAD if line_h + 2 * TEXT_PAD <= card_text_h else max(1, (card_text_h - line_h) // 2)
+            pad = max(0, pad)
+            y = ey_top + pad + _S  # +1px down (text nudged right+down inside the card)
             for text, fnt in render_lines:
                 if not text:
                     y += GROUP_GAP
                     continue
                 lh = line_h if fnt is event_font else line_h_sm
+                glyph_h = _font_line_h(fnt)  # ascent+descent+leading of THIS font
                 # Task 3: push text lines that fall inside an on-top card's
                 # vertical range down to just below that card (if room remains).
                 while True:
@@ -1052,18 +1094,26 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
                         break
                     if y + lh > ey_bot - _sz(4):
                         break
-                if y + lh > ey_bot - _sz(4):
-                    break  # No room below the overlapping card
+                # Fit check: only draw if the glyph fits within the card. Use the
+                # glyph height (not the full line_h) so a tight card can still show
+                # one title line; if even the glyph doesn't fit, stop (the card is
+                # too short for text at this size — the grid still shows the event).
+                if y + glyph_h > ey_bot - _S:
+                    break  # No room below the overlapping card / card too short
                 if bw_mode and not is_dimmed:
-                    # White text on the black card — thickened so strokes stay
-                    # >=2px and render cleanly at native 1-bit.
+                    # White text on the black card — stroke scaled to the font so
+                    # strokes stay >=1px and render cleanly at native 1-bit across
+                    # the whole modifier range.
                     draw.text((txt_x, y), text, fill=WHITE, font=fnt,
-                              stroke_width=max(1, _sz(2)), stroke_fill=WHITE)
+                              stroke_width=_font_stroke(fnt), stroke_fill=WHITE)
                 elif bw_mode and is_dimmed:
                     # Finished/checkerboard event: black text with a WIDE white
                     # halo so it reads clearly over the 1px B/W checker fill.
+                    # Halo scales with the font so it stays proportional at large
+                    # modifiers and doesn't swallow small glyphs at modifier 0.
                     draw.text((txt_x, y), text, fill=BLACK, font=fnt,
-                              stroke_width=max(1, _sz(3) + 3 * _S), stroke_fill=WHITE)
+                              stroke_width=_font_stroke(fnt, base=3) + 2 * _S,
+                              stroke_fill=WHITE)
                 else:
                     draw.text((txt_x, y), text, fill=text_fill, font=fnt)
                 y += lh
@@ -1103,7 +1153,7 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
                 draw.rectangle([xl, ey, xr, ey + fd_h - _sz(2)], fill=BLACK,
                                outline=WHITE, width=max(1, _S))
                 draw.text((xl + _sz(8), ey + _sz(3)), display, fill=WHITE, font=fd_font,
-                          stroke_width=max(1, _sz(2)), stroke_fill=WHITE)
+                          stroke_width=_font_stroke(fd_font), stroke_fill=WHITE)
             else:
                 draw.rounded_rectangle([xl, ey, xr, ey + fd_h - _sz(2)], radius=6,
                                        fill=GRAY_VLIGHT, outline=BLACK, width=2)
@@ -1230,7 +1280,7 @@ def _draw_time_pill(draw, x_right, y_center, text, font):
     draw.rectangle([bx0 - ring, by0 - ring, bx1 + ring, by1 + ring], fill=WHITE)
     draw.rectangle([bx0, by0, bx1, by1], fill=BLACK)
     draw.text((bx0 + pad_x - bb[0], by0 + pad_y - bb[1]), text, fill=WHITE, font=font,
-              stroke_width=max(1, _sz(2)), stroke_fill=WHITE)
+              stroke_width=_font_stroke(font), stroke_fill=WHITE)
 
 
 # ---- Current-time line ----
