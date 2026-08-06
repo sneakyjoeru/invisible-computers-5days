@@ -1127,6 +1127,12 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
                     draw.text((txt_x, y), text, fill=text_fill, font=fnt)
                 y += lh
 
+            # Redraw the white border ON TOP of the text halo for checkerboard
+            # dimmed events — the wide white text stroke (needed for readability
+            # over the B/W checker) eats the border on the top and left edges.
+            if bw_mode and is_dimmed and dim_style == "checkerboard":
+                draw.rectangle([fx0, fy0, fx1, fy1], outline=WHITE, width=border_w)
+
     # Full-day events — drawn LAST so they cover everything (day headers, timed events)
     fd_font = _font(24)
     fd_step = fd_h  # no gap between stacked events
