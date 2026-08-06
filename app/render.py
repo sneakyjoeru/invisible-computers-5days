@@ -850,8 +850,7 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
             label = f"{h12} {ampm}"
         else:
             label = f"{h:02d}"
-        draw.text((grid_x - max_label_w - label_rpad, y - _sz(14)), label, fill=BLACK, font=hour_font,
-                  stroke_width=1, stroke_fill=BLACK)
+        draw.text((grid_x - max_label_w - label_rpad, y - _sz(14)), label, fill=BLACK, font=hour_font)
 
     # Column separators — thicker where month changes, extending up to header line
     sep_top = grid_y if compact_top else _sz(HEADER_H) - _sz(10)
