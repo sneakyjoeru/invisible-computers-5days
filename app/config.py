@@ -80,6 +80,10 @@ NETGUARD_INTERVAL_SEC = int(os.environ.get("NETGUARD_INTERVAL_SEC", "20"))
 # Full re-render at least every 30 minutes; event-change polling in between.
 RENDER_INTERVAL_SEC = int(os.environ.get("RENDER_INTERVAL_SEC", str(30 * 60)))
 EVENT_POLL_SEC = int(os.environ.get("EVENT_POLL_SEC", "60"))
+# Render this many seconds BEFORE each :00/:30 boundary, depicting the boundary
+# time — so the render→push→device-fetch pipeline lands the right time on-screen.
+# Triggers at :29:20 and :59:20 by default (40s lead).
+RENDER_LEAD_SEC = int(os.environ.get("RENDER_LEAD_SEC", "40"))
 
 # ---- Google OAuth (same app as the 1872 instance, different account) ----
 GOOGLE_CLIENT_SECRET = os.environ.get(

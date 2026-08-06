@@ -48,7 +48,6 @@ INSTANCE_DEFAULTS = {
 # ---- Render state ----
 _render_lock = threading.Lock()
 _last_render_sig = ""
-_last_slot = None
 _last_render_ts = 0.0
 _force_render = threading.Event()
 
@@ -146,9 +145,11 @@ def _as_dt(value, now: datetime.datetime) -> datetime.datetime:
     return datetime.datetime(value.year, value.month, value.day, tzinfo=now.tzinfo)
 
 
-def _slot_id(dt: datetime.datetime):
-    """30-minute clock slot (aligned to :00 and :30) — renders on slot change."""
-    return (dt.year, dt.month, dt.day, dt.hour, 0 if dt.minute < 30 else 1)
+def _next_half_hour(dt: datetime.datetime) -> datetime.datetime:
+    """The next :00 or :30 boundary strictly after dt."""
+    if dt.minute < 30:
+        return dt.replace(minute=30, second=0, microsecond=0)
+    return dt.replace(minute=0, second=0, microsecond=0) + datetime.timedelta(hours=1)
 
 
 def _event_range(now: datetime.datetime, view_mode: str):
@@ -168,9 +169,14 @@ def _event_range(now: datetime.datetime, view_mode: str):
     return start, start + datetime.timedelta(days=7)
 
 
-def do_render(force: bool = False) -> bool:
-    """Fetch events, render to the 1-bit image file. Returns True on success."""
-    global _last_render_sig, _last_slot, _last_render_ts
+def do_render(force: bool = False, render_now: datetime.datetime = None) -> bool:
+    """Fetch events, render to the 1-bit image file. Returns True on success.
+
+    render_now: the time to DEPICT (time-line position, past/future dimming). For
+    the scheduled boundary renders this is the upcoming :00/:30 so the image is
+    correct once it reaches the screen. Change-detection always uses the ACTUAL
+    current time, so a real add/remove/modify/start/end still triggers a render."""
+    global _last_render_sig, _last_render_ts
     if not _render_lock.acquire(timeout=120):
         logger.error("do_render: lock timeout")
         return False
@@ -179,21 +185,22 @@ def do_render(force: bool = False) -> bool:
         # Timezone-aware local time. Naive datetimes made render convert the
         # tz-aware Google events to UTC (3h off the local hour grid). astimezone()
         # attaches the system tz (Europe/Tallinn on the Pi) so events land right.
-        now = datetime.datetime.now().astimezone()
+        actual_now = datetime.datetime.now().astimezone()
+        depict_now = render_now.astimezone() if render_now else actual_now
 
         if not calendar_client.is_authenticated():
             _render_status_image("Connect a Google account", "Open the settings page")
             return False
 
         view_mode = s.get("view_mode", "5days")
-        start, end = _event_range(now, view_mode)
+        start, end = _event_range(depict_now, view_mode)
         events = calendar_client.fetch_events(start, end, s.get("selected_calendars") or None)
 
-        sig = _render_signature(events, now)
-        slot = _slot_id(now)
+        # Change detection is relative to the REAL clock (real starts/ends), even
+        # when we depict a slightly future minute.
+        sig = _render_signature(events, actual_now)
         changed = (sig != _last_render_sig)      # add / remove / modify / start / end
-        slot_changed = (slot != _last_slot)      # crossed a :00 or :30 boundary
-        if not force and not changed and not slot_changed and _last_render_ts:
+        if not force and not changed and _last_render_ts:
             return False
 
         img = render.render_calendar(
@@ -210,14 +217,13 @@ def do_render(force: bool = False) -> bool:
             bw_mode=s.get("bw_mode", False),
             dim_past_events=s.get("dim_past_events", False),
             crossed_event_dim=s.get("crossed_event_dim", False),
-            now=now,
+            now=depict_now,
         )
         mac_driver.render_to_file(img)
         _last_render_sig = sig
-        _last_slot = slot
         _last_render_ts = time.time()
-        logger.info("Rendered (%d events, changed=%s, slot_changed=%s)",
-                    len(events), changed, slot_changed)
+        logger.info("Rendered (%d events, changed=%s, depict=%s)",
+                    len(events), changed, depict_now.strftime("%H:%M"))
         return True
     except Exception as e:
         logger.error("do_render error: %s", e)
@@ -257,20 +263,35 @@ def render_loop():
             return
         _render_loop_running = True
     logger.info("Render loop started")
+    scheduled_for = None  # boundary datetime we've already pre-rendered
     while True:
         try:
-            do_render(force=_force_render.is_set())
-            _force_render.clear()
+            now = datetime.datetime.now().astimezone()
+            boundary = _next_half_hour(now)                 # upcoming :00 / :30
+            trigger = boundary - datetime.timedelta(seconds=config.RENDER_LEAD_SEC)  # :29:20 / :59:20
+            if _force_render.is_set():
+                do_render(force=True)                       # manual / auth just completed
+                _force_render.clear()
+            elif now >= trigger and scheduled_for != boundary:
+                # Pre-render the upcoming boundary a bit early, depicting that
+                # boundary time so it's correct once it reaches the screen.
+                do_render(force=True, render_now=boundary)
+                scheduled_for = boundary
+            else:
+                do_render()                                 # event add/remove/modify/start/end
         except Exception as e:
             logger.error("render_loop error: %s", e)
-        # Sleep until the sooner of: the next :00/:30 boundary (so the 30-min
-        # render lands right on the clock) or EVENT_POLL_SEC (to catch event
-        # add/remove/modify/start/end). Wakes early if a manual render is queued.
-        now = datetime.datetime.now()
-        secs_into_slot = (now.minute % 30) * 60 + now.second
-        to_boundary = 30 * 60 - secs_into_slot + 2  # +2s to land just after :00/:30
-        sleep_s = max(1, min(config.EVENT_POLL_SEC, to_boundary))
-        _force_render.wait(timeout=sleep_s)
+
+        # Sleep until the sooner of the next trigger (:29:20 / :59:20) or
+        # EVENT_POLL_SEC (to catch event changes). If we're inside the lead
+        # window, wake just past the boundary to roll to the next one.
+        now2 = datetime.datetime.now().astimezone()
+        trigger2 = _next_half_hour(now2) - datetime.timedelta(seconds=config.RENDER_LEAD_SEC)
+        if now2 < trigger2:
+            sleep_s = min(config.EVENT_POLL_SEC, (trigger2 - now2).total_seconds())
+        else:
+            sleep_s = (_next_half_hour(now2) - now2).total_seconds() + 2
+        _force_render.wait(timeout=max(1, sleep_s))
 
 
 # ================= endpoints =================
