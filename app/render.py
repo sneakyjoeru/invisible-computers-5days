@@ -946,9 +946,8 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
         # longest/base overlapping event keeps the full column left edge (Task 2);
         # only the shorter, on-top (rank > 0) event is inset to the right.
         SHRINK = _sz(6)  # ~1mm at 150 DPI
-        OVERLAP_INSET = 4  # Task 2: on-top card left edge inset, 4px at OUTPUT scale.
-        # Native rendering (SCREEN==OUTPUT) → 4 native px; legacy 3x → still 4px at
-        # output (intentionally fixed in output space so the visible inset is stable).
+        OVERLAP_INSET = 3  # On-top card left edge inset (3px) from the base's
+        # left edge; the base (longest) event stays at the column edge.
         draw_infos = []  # (ev, ey_top, ey_bot, eh, duration, xl, xr, start_min, end_min, rank)
         for idx, (ev, ey_top, ey_bot, eh, duration, s_min, e_min) in enumerate(ev_infos):
             # Find ALL overlapping events
