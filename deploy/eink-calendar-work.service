@@ -11,6 +11,7 @@ Environment=OPEN_MODE=1
 Environment=SSL_ENABLED=1
 Environment=APP_PORT=8890
 Environment=EINK_CONFIG_DIR=/opt/eink-calendar-work/config
+Environment=PUSH_AFTER_RENDER=1
 ExecStartPre=/opt/eink-calendar-work/.venv/bin/python -c "from app import config; config.ensure_ssl_cert()"
 ExecStart=/opt/eink-calendar-work/.venv/bin/python -m uvicorn app.mac_main:app --host 0.0.0.0 --port 8890 --ssl-certfile /opt/eink-calendar-work/config/ssl/cert.pem --ssl-keyfile /opt/eink-calendar-work/config/ssl/key.pem --log-level info
 Restart=on-failure

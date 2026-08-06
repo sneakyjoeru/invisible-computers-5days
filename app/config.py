@@ -84,6 +84,10 @@ EVENT_POLL_SEC = int(os.environ.get("EVENT_POLL_SEC", "60"))
 # time — so the render→push→device-fetch pipeline lands the right time on-screen.
 # Triggers at :29:20 and :59:20 by default (40s lead).
 RENDER_LEAD_SEC = int(os.environ.get("RENDER_LEAD_SEC", "40"))
+# Push the freshly-rendered image to the public host immediately after each
+# render (Orange-Pi deployment) instead of relying only on a periodic timer.
+PUSH_AFTER_RENDER = os.environ.get("PUSH_AFTER_RENDER", "0") == "1"
+PUSH_SCRIPT = os.environ.get("PUSH_SCRIPT", str(BASE_DIR / "push_to_website.sh"))
 
 # ---- Google OAuth (same app as the 1872 instance, different account) ----
 GOOGLE_CLIENT_SECRET = os.environ.get(

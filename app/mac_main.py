@@ -13,6 +13,8 @@ import hmac
 import ipaddress
 import json
 import logging
+import os
+import subprocess
 import threading
 import time
 from pathlib import Path
@@ -145,6 +147,32 @@ def _as_dt(value, now: datetime.datetime) -> datetime.datetime:
     return datetime.datetime(value.year, value.month, value.day, tzinfo=now.tzinfo)
 
 
+_push_lock = threading.Lock()
+
+
+def _push_after_render():
+    """Run the publish script immediately after a render (best-effort, in the
+    background). Coalesces: if a push is already in flight, skip — scp reads the
+    file when it runs, so the in-flight push still sends the latest image."""
+    if not config.PUSH_AFTER_RENDER or not os.path.exists(config.PUSH_SCRIPT):
+        return
+
+    def _run():
+        if not _push_lock.acquire(blocking=False):
+            return
+        try:
+            r = subprocess.run(["bash", config.PUSH_SCRIPT],
+                                capture_output=True, text=True, timeout=30)
+            if r.returncode != 0:
+                logger.warning("push failed: %s", (r.stderr or r.stdout).strip()[:200])
+        except Exception as e:
+            logger.warning("push error: %s", e)
+        finally:
+            _push_lock.release()
+
+    threading.Thread(target=_run, daemon=True).start()
+
+
 def _next_half_hour(dt: datetime.datetime) -> datetime.datetime:
     """The next :00 or :30 boundary strictly after dt."""
     if dt.minute < 30:
@@ -224,6 +252,7 @@ def do_render(force: bool = False, render_now: datetime.datetime = None) -> bool
         _last_render_ts = time.time()
         logger.info("Rendered (%d events, changed=%s, depict=%s)",
                     len(events), changed, depict_now.strftime("%H:%M"))
+        _push_after_render()   # publish immediately (Orange-Pi: PUSH_AFTER_RENDER=1)
         return True
     except Exception as e:
         logger.error("do_render error: %s", e)

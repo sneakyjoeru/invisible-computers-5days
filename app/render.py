@@ -18,6 +18,40 @@ logger = logging.getLogger("eink.render")
 W = config.SCREEN_W
 H = config.SCREEN_H
 
+# Supersample factor (render is composed at W/H = OUTPUT * SUPERSAMPLE, then
+# downscaled). Snapping thin dotted grid lines to a multiple of this keeps them
+# a uniform 1px after downscale (an unaligned line aliases to 1px or 2px).
+_S = max(1, getattr(config, "SUPERSAMPLE", 1))
+
+
+def _snap(v) -> int:
+    """Round a coordinate to the nearest multiple of the supersample factor so
+    thin lines downscale to a consistent 1px."""
+    return int(round(v / _S) * _S)
+
+
+def _hdots(draw, x0, x1, y, on=None, off=None):
+    """Horizontal dotted line, drawn as top-aligned _S-thick dashes starting at a
+    snapped coordinate → a uniform 1px dotted line after downscale. on/off are in
+    supersample px (default 1px-on/2px-off at output = '100100')."""
+    on = _S if on is None else on
+    off = 2 * _S if off is None else off
+    x, x1, y = int(x0), int(x1), int(y)
+    while x <= x1:
+        draw.rectangle([x, y, min(x + on - 1, x1), y + _S - 1], fill=BLACK)
+        x += on + off
+
+
+def _vdots(draw, x, y0, y1, on=None, off=None):
+    """Vertical dotted line (top-aligned _S-thick dashes). Default 1px-on/1px-off
+    at output = '1010' (denser than the hour lines)."""
+    on = _S if on is None else on
+    off = _S if off is None else off
+    y, y1, x = int(y0), int(y1), int(x)
+    while y <= y1:
+        draw.rectangle([x, y, x + _S - 1, min(y + on - 1, y1)], fill=BLACK)
+        y += on + off
+
 # Margins (pixels)
 MARGIN = 78   # left margin for hour labels
 RIGHT_PAD = 10  # right edge padding
@@ -690,6 +724,13 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
     grid_h = H - grid_y - FOOTER_H + 20  # +~2mm bottom expansion
 
     col_w = grid_w // days
+    if bw_mode:
+        # Snap grid geometry to the supersample grid so dotted hour/day lines
+        # and edges all downscale to a uniform 1px (no 1px/2px deviations).
+        grid_x = _snap(grid_x)
+        grid_y = _snap(grid_y)
+        grid_h = _snap(grid_h)
+        col_w = _snap(col_w)
     ds_min = ds_h * 60 + ds_m
     de_min = de_h * 60 + de_m
     span_min = de_min - ds_min
@@ -706,20 +747,32 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
                 d = d.date()
             fd_events_by_date.setdefault(d, []).append(ev)
 
-    # Grid border
-    grid_border_color = BLACK if bw_mode else GRAY_LIGHT
-    draw.rectangle([grid_x, grid_y, grid_x + days * col_w - 1, grid_y + grid_h - 1],
-                   outline=grid_border_color, width=1)
+    # Grid border. In b/w mode the dotted hour/day lines define the grid, so we
+    # skip the solid perimeter outline — it drew a solid horizontal line across
+    # all days at grid_y (= day_start, e.g. 10:30) that looked out of place.
+    if not bw_mode:
+        draw.rectangle([grid_x, grid_y, grid_x + days * col_w - 1, grid_y + grid_h - 1],
+                       outline=GRAY_LIGHT, width=1)
+    else:
+        # Dotted top + bottom edges (same 100100 style as hour lines) so the
+        # vertical day separators connect to a horizontal line at the grid top
+        # and bottom — no solid perimeter.
+        for _edge_y in (grid_y, grid_y + grid_h):
+            _hdots(draw, grid_x, grid_x + days * col_w, _edge_y)
 
     # Hour lines + labels
     for h in range(ds_h, de_h + 1):
         y = int(grid_y + (h * 60 - ds_min) * minute_h)
+        if bw_mode:
+            y = _snap(y)  # align to supersample grid → uniform 1px dotted line
         if y > grid_y + grid_h:
             break
+        if y < grid_y:
+            continue  # hour before day_start (e.g. 10:00 when day starts 10:30) — off-grid
         if bw_mode:
-            # Hour lines as "100100" dots: each dot a 3x3 block at 3x supersample
-            # → a solid 1px dot every 3px after downscale (width=1 averaged away).
-            _hsegments(draw, grid_x, grid_x + days * col_w, y, BLACK, step=9, seg_len=3, width=3)
+            # Hour lines as "100100" dots (1px on / 2px off at output), snapped so
+            # every line is a uniform 1px.
+            _hdots(draw, grid_x, grid_x + days * col_w, y)
         else:
             _hline(draw, grid_x, y, grid_x + days * col_w, GRAY_HOUR_LINE, width=1)
         if time_format == "12h":
@@ -738,13 +791,13 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
         x = grid_x + i * col_w
         prev_d = start_date + datetime.timedelta(days=i - 1)
         curr_d = start_date + datetime.timedelta(days=i)
-        if prev_d.month != curr_d.month:
-            # Thick line at month boundary (same in all modes)
+        if prev_d.month != curr_d.month and not bw_mode:
+            # Thick line at month boundary (grayscale mode only)
             _vline(draw, x, sep_top, grid_y + grid_h, BLACK, width=3)
         elif bw_mode:
-            # Day separators as "1010" dots: 1px on / 1px off at output → 3px on /
-            # 3px off at 3x supersample (denser than the hour lines).
-            _vsegments(draw, x, grid_y, grid_y + grid_h, BLACK, step=6, seg_len=3, width=3)
+            # Day separators as "1010" dots (1px on / 1px off at output), snapped
+            # so every line is a uniform 1px.
+            _vdots(draw, _snap(x), grid_y, grid_y + grid_h)
         else:
             _vline(draw, x, grid_y, grid_y + grid_h, GRAY_LIGHT, width=1)
 
@@ -849,7 +902,7 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
                 else:
                     # 1 overlap, shorter event: original shrink
                     xl, xr = x + 6 + SHRINK * 3, x + col_w - 4
-                xl += 6  # shift overlapping card's left edge +2px right (all cases)
+                xl += 18  # shift overlapping card's left edge right: 6px out (prev 2px + 4px)
             else:
                 xl, xr = x + 4, x + col_w - 4
             draw_infos.append((ev, ey_top, ey_bot, eh, duration, xl, xr, s_min, e_min))
