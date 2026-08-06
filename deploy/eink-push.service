@@ -1,0 +1,8 @@
+[Unit]
+Description=Push eink calendar image to public website
+After=network-online.target
+[Service]
+Type=oneshot
+User=orangepi
+Nice=15
+ExecStart=/bin/bash /opt/eink-calendar-work/push_to_website.sh

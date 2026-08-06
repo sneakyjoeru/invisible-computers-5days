@@ -1,0 +1,14 @@
+# Secrets / runtime state (NEVER commit).
+# config/ holds: access_token, pi_key (SSH private key), token.json,
+# client_secret.json, ssl/, image_name, push.env, logs, render.png
+config/
+.env
+
+# Python / venv
+.venv/
+__pycache__/
+*.pyc
+tmp_render/
+
+# OS
+.DS_Store

@@ -1,0 +1,8 @@
+[Unit]
+Description=Push eink calendar image every 2 minutes
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=120
+Persistent=true
+[Install]
+WantedBy=timers.target
