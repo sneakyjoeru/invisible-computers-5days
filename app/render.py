@@ -1049,16 +1049,16 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
                     render_lines.append((line, event_font))
             if time_str:
                 if render_lines:
-                    render_lines.append(("", None))  # spacing from title
+                    render_lines.append(("", None, -3))  # spacing from title (−3px: text block moved up)
                 render_lines.append((time_str, event_font))
             if location and not is_overlap:
                 if render_lines:
-                    render_lines.append(("", None))
+                    render_lines.append(("", None, 0))
                 for line in _wrap_text_lines(draw, "@ " + location, event_font_sm, avail_w):
                     render_lines.append((line, event_font_sm))
             if description and not is_overlap:
                 if render_lines:
-                    render_lines.append(("", None))
+                    render_lines.append(("", None, 0))
                 for line in _wrap_text_lines(draw, description, event_font_sm, avail_w):
                     render_lines.append((line, event_font_sm))
 
@@ -1085,9 +1085,11 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
             pad = TEXT_PAD if line_h + 2 * TEXT_PAD <= card_text_h else max(1, (card_text_h - line_h) // 2)
             pad = max(0, pad)
             y = ey_top + pad + _S  # +1px down (text nudged right+down inside the card)
-            for text, fnt in render_lines:
+            for item in render_lines:
+                text, fnt = item[0], item[1]
+                gap_adj = item[2] if len(item) > 2 else 0
                 if not text:
-                    y += GROUP_GAP
+                    y += GROUP_GAP + gap_adj
                     continue
                 lh = line_h if fnt is event_font else line_h_sm
                 glyph_h = _font_line_h(fnt)  # ascent+descent+leading of THIS font
@@ -1287,13 +1289,13 @@ def _draw_time_pill(draw, x_right, y_center, text, font):
     bx0 = bx1 - box_w
     by0 = int(y_center - box_h // 2)
     by1 = by0 + box_h
-    ring = _sz(5)  # white border thickness (scaled; ~1.7px at 3x, 1px native)
+    ring = _sz(5)  # black border thickness (scaled; ~1.7px at 3x, 1px native)
     ring = max(1, ring)
-    # Solid white border rectangle (all four edges, incl. top), then a black
-    # interior with white text: visible on both the white grid and black cards.
-    draw.rectangle([bx0 - ring, by0 - ring, bx1 + ring, by1 + ring], fill=WHITE)
-    draw.rectangle([bx0, by0, bx1, by1], fill=BLACK)
-    draw.text((bx0 + pad_x - bb[0], by0 + pad_y - bb[1]), text, fill=WHITE, font=font)
+    # Solid black border rectangle (all four edges, incl. top), then a white
+    # interior with black text: visible on both the white grid and black cards.
+    draw.rectangle([bx0 - ring, by0 - ring, bx1 + ring, by1 + ring], fill=BLACK)
+    draw.rectangle([bx0, by0, bx1, by1], fill=WHITE)
+    draw.text((bx0 + pad_x - bb[0], by0 + pad_y - bb[1]), text, fill=BLACK, font=font)
 
 
 # ---- Current-time line ----
