@@ -273,7 +273,7 @@ def render_calendar(view_mode: str, events: list[dict],
     # Draw current-time line on week/7days/5days views
     if view_mode in ("week", "7days", "5days") and show_time_line:
         _draw_time_line(draw, now, view_mode, day_start, day_end, events, time_format,
-                        style=time_line_style)
+                        style=time_line_style, max_full_day=max_full_day, bw_mode=bw_mode)
 
     # Settings URL (centered between title and subtitle on header line)
     if settings_url:
@@ -1300,7 +1300,7 @@ def _draw_time_pill(draw, x_right, y_center, text, font):
 
 # ---- Current-time line ----
 def _draw_time_line(draw, now, view_mode, day_start, day_end, events, time_format="24h",
-                     style="dotted"):
+                     style="dotted", max_full_day=0, bw_mode=False):
     """Draw a horizontal line at the current time position.
 
     style: "solid" (thick 4px line), "dotted" (striped, default), "wavy"
@@ -1348,14 +1348,12 @@ def _draw_time_line(draw, now, view_mode, day_start, day_end, events, time_forma
     grid_x = max(_sz(60), max_label_w + _sz(14))
     grid_w = W - grid_x - _sz(RIGHT_PAD)
     compact_top = view_mode in ("5days", "7days")  # start_today views
-    fd_h = _sz(34) if compact_top else _sz(30)
+    fd_h = max(_sz(34) if compact_top else _sz(30), _font_line_h(_font(24)) + _sz(2))
     if compact_top:
         label_top = _sz(6)
         label_h = _sz(52)
         allday_top = label_top + label_h + _sz(4)
-        reserve = 0  # max_full_day unknown here; grid_y below matches the
-        # no-all-day-events case. When all-day events exist the time line is
-        # still correct because minute_h shifts with grid_h consistently.
+        reserve = (max_full_day * fd_h) if max_full_day > 0 else 0
         grid_y = allday_top + reserve + _sz(6)
     else:
         grid_y = _sz(HEADER_H) + _sz(50)
@@ -1363,6 +1361,11 @@ def _draw_time_line(draw, now, view_mode, day_start, day_end, events, time_forma
     # affects minute_h, which determines the time-line Y position.
     grid_h = H - grid_y - _sz(FOOTER_H) + _sz(20)
     col_w = grid_w // days
+    if bw_mode:
+        grid_x = _snap(grid_x)
+        grid_y = _snap(grid_y)
+        grid_h = _snap(grid_h)
+        col_w = _snap(col_w)
     span_min = de_min - ds_min
     if span_min <= 0:
         span_min = 16 * 60
