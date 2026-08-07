@@ -805,14 +805,25 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
         span_min = 16 * 60  # fallback 16h
     minute_h = grid_h / span_min  # pixels per minute
 
-    # Full-day events — build data index early
+    # Full-day events — build data index early. Multi-day all-day events are
+    # registered on EVERY date they span (start .. end-1, Google convention) so
+    # they can be rendered as a single bar stretching across all their days.
     fd_events_by_date: dict[datetime.date, list[dict]] = {}
     for ev in events:
         if ev["all_day"]:
             d = ev["start"]
             if isinstance(d, datetime.datetime):
                 d = d.date()
-            fd_events_by_date.setdefault(d, []).append(ev)
+            end_d = ev.get("end")
+            if isinstance(end_d, datetime.datetime):
+                end_d = end_d.date()
+            # Expand to all dates in [start, end). end is exclusive (Google Cal).
+            cur = d
+            while end_d is not None and cur < end_d:
+                fd_events_by_date.setdefault(cur, []).append(ev)
+                cur += datetime.timedelta(days=1)
+            if end_d is None:
+                fd_events_by_date.setdefault(d, []).append(ev)
 
     # Grid border. In b/w mode the dotted hour/day lines define the grid, so we
     # skip the solid perimeter outline — it drew a solid horizontal line across
@@ -1135,45 +1146,103 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
             if bw_mode and is_dimmed and dim_style == "checkerboard":
                 draw.rectangle([fx0, fy0, fx1, fy1], outline=WHITE, width=border_w)
 
-    # Full-day events — drawn LAST so they cover everything (day headers, timed events)
+    # Full-day events — drawn LAST so they cover everything (day headers, timed events).
+    # Multi-day all-day events are expanded to span all their day columns as a
+    # single horizontal bar on the same row.
     fd_font = _font(24)
     fd_step = fd_h  # no gap between stacked events
-    for i in range(days):
-        d = start_date + datetime.timedelta(days=i)
-        x = grid_x + i * col_w
-        fd_list = fd_events_by_date.get(d, [])
-        fd_count = min(len(fd_list), max_full_day)
-        for j, ev in enumerate(fd_list[:max_full_day]):
-            label = ev.get("summary", "")
-            if not label or label == "(No title)":
-                continue
 
-            if compact_top:
-                # Stack straight down, just below the day labels.
-                ey = allday_top + j * fd_step
-            else:
-                # Classic band: single event above header line, 2 below, 3+ overshoot
-                if fd_count == 1:
-                    ey = allday_top - fd_step
-                elif j < 2:
-                    ey = allday_top + j * fd_step
-                else:
-                    ey = allday_top - (j - 1) * fd_step
+    # Collect unique events + their date span within the visible range.
+    visible_dates = [start_date + datetime.timedelta(days=i) for i in range(days)]
+    date_to_col = {d: i for i, d in enumerate(visible_dates)}
 
-            # Full cell width (stack vertically, not side-by-side)
-            xl, xr = x + _sz(4), x + col_w - _sz(4)
-            avail_fd_w = xr - xl - _sz(8)
-            wrapped = _wrap_text_lines(draw, label, fd_font, avail_fd_w)
-            display = wrapped[0] if wrapped else label[:15]
-            if bw_mode:
-                # Black bar with a 1px white border + white text (matches cards).
-                draw.rectangle([xl, ey, xr, ey + fd_h - _sz(2)], fill=BLACK,
-                               outline=WHITE, width=max(1, _S))
-                draw.text((xl + _sz(8), ey + _sz(3)), display, fill=WHITE, font=fd_font)
+    # Build unique event list with start/end column indices within the visible range.
+    seen_ids = set()
+    fd_spans = []  # (ev, col_start, col_end_inclusive)
+    for ev in events:
+        if not ev["all_day"]:
+            continue
+        ev_id = ev.get("id", id(ev))
+        if ev_id in seen_ids:
+            continue
+        seen_ids.add(ev_id)
+        d = ev["start"]
+        if isinstance(d, datetime.datetime):
+            d = d.date()
+        end_d = ev.get("end")
+        if isinstance(end_d, datetime.datetime):
+            end_d = end_d.date()
+        if end_d is None:
+            end_d = d + datetime.timedelta(days=1)
+        # Last day the event covers (end is exclusive)
+        last_d = end_d - datetime.timedelta(days=1)
+        # Clamp to visible range
+        vis_start = max(d, visible_dates[0])
+        vis_end = min(last_d, visible_dates[-1])
+        if vis_start > visible_dates[-1] or vis_end < visible_dates[0]:
+            continue  # entirely outside visible range
+        col_start = date_to_col[vis_start]
+        col_end = date_to_col[vis_end]
+        fd_spans.append((ev, col_start, col_end))
+
+    # Sort by start column, then by span length (longer first so they get lower row slots)
+    fd_spans.sort(key=lambda s: (s[1], -(s[2] - s[1])))
+
+    # Assign row slots greedily — each event needs the same row across all its columns.
+    # row_occupied[row] = set of columns already taken
+    row_occupied: list[set[int]] = []
+    fd_rows: list[int] = []  # row index per fd_span entry
+    for ev, col_start, col_end in fd_spans:
+        cols_needed = set(range(col_start, col_end + 1))
+        assigned = False
+        for row_idx, occupied in enumerate(row_occupied):
+            if not cols_needed & occupied:
+                occupied.update(cols_needed)
+                fd_rows.append(row_idx)
+                assigned = True
+                break
+        if not assigned:
+            row_occupied.append(cols_needed.copy())
+            fd_rows.append(len(row_occupied) - 1)
+
+    # Draw each event as a single bar spanning its day columns.
+    max_row = max(fd_rows) if fd_rows else -1
+    for (ev, col_start, col_end), row_idx in zip(fd_spans, fd_rows):
+        if row_idx >= max_full_day:
+            continue  # skip rows beyond the visible limit
+        label = ev.get("summary", "")
+        if not label or label == "(No title)":
+            continue
+
+        fd_count = max_row + 1  # total rows used (for classic-band layout logic)
+        if compact_top:
+            # Stack straight down, just below the day labels.
+            ey = allday_top + row_idx * fd_step
+        else:
+            # Classic band: single event above header line, 2 below, 3+ overshoot
+            if fd_count == 1:
+                ey = allday_top - fd_step
+            elif row_idx < 2:
+                ey = allday_top + row_idx * fd_step
             else:
-                draw.rounded_rectangle([xl, ey, xr, ey + fd_h - _sz(2)], radius=6,
-                                       fill=GRAY_VLIGHT, outline=BLACK, width=2)
-                draw.text((xl + _sz(8), ey + _sz(3)), display, fill=BLACK, font=fd_font)
+                ey = allday_top - (row_idx - 1) * fd_step
+
+        # Span from first day's left edge to last day's right edge
+        x_start = grid_x + col_start * col_w
+        x_end_col = grid_x + (col_end + 1) * col_w
+        xl, xr = x_start + _sz(4), x_end_col - _sz(4)
+        avail_fd_w = xr - xl - _sz(8)
+        wrapped = _wrap_text_lines(draw, label, fd_font, avail_fd_w)
+        display = wrapped[0] if wrapped else label[:15]
+        if bw_mode:
+            # Black bar with a 1px white border + white text (matches cards).
+            draw.rectangle([xl, ey, xr, ey + fd_h - _sz(2)], fill=BLACK,
+                           outline=WHITE, width=max(1, _S))
+            draw.text((xl + _sz(8), ey + _sz(3)), display, fill=WHITE, font=fd_font)
+        else:
+            draw.rounded_rectangle([xl, ey, xr, ey + fd_h - _sz(2)], radius=6,
+                                   fill=GRAY_VLIGHT, outline=BLACK, width=2)
+            draw.text((xl + _sz(8), ey + _sz(3)), display, fill=BLACK, font=fd_font)
 
 
 def _wrap_text_lines(draw, text, font, max_w):
