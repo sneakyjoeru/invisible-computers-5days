@@ -1027,11 +1027,12 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
                                            fill=BLACK, outline=BLACK, width=border_w)
                     _draw_checker(draw, fx0 + border_w, fy0 + border_w,
                                   fx1 - border_w, fy1 - border_w, block=max(1, _sz(1)))
-                    # Solid white border on all four sides (plain rectangle, no
-                    # rounding — the rounded corners left the top and left edges
-                    # without a visible border because the corner pixels fall
-                    # outside the rounded shape).
-                    draw.rectangle([fx0, fy0, fx1, fy1], outline=WHITE, width=border_w)
+                    # Solid white rounded border on all four sides — matches
+                    # the rounded fill so corners stay rounded. The earlier plain
+                    # rectangle left sharp corners that looked wrong next to the
+                    # rounded non-dimmed cards.
+                    draw.rounded_rectangle([fx0, fy0, fx1, fy1], radius=_sz(12),
+                                           outline=WHITE, width=border_w)
                 else:
                     draw.rounded_rectangle([fx0, fy0, fx1, fy1], radius=_sz(12),
                                            fill=BLACK, outline=WHITE, width=border_w)
@@ -1144,7 +1145,8 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
             # dimmed events — the wide white text stroke (needed for readability
             # over the B/W checker) eats the border on the top and left edges.
             if bw_mode and is_dimmed and dim_style == "checkerboard":
-                draw.rectangle([fx0, fy0, fx1, fy1], outline=WHITE, width=border_w)
+                draw.rounded_rectangle([fx0, fy0, fx1, fy1], radius=_sz(12),
+                                       outline=WHITE, width=border_w)
 
     # Full-day events — drawn LAST so they cover everything (day headers, timed events).
     # Multi-day all-day events are expanded to span all their day columns as a
