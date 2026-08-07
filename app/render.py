@@ -1382,7 +1382,7 @@ def _draw_time_line(draw, now, view_mode, day_start, day_end, events, time_forma
         for sx in range(x_start, x_end, stripe_w * 2):
             draw.rectangle([sx, y - _sz(4), sx + stripe_w, y + _sz(4)], fill=BLACK)
         # Time label pill
-        _draw_time_pill(draw, x_end, y, now.strftime("%H:%M"), _font(26, bold=True))
+        _draw_time_pill(draw, x_end, y, now.strftime("%H:%M"), _font(28, bold=True))
         return
 
     if now_min > de_min:
@@ -1392,7 +1392,7 @@ def _draw_time_line(draw, now, view_mode, day_start, day_end, events, time_forma
         for sx in range(x_start, x_end, stripe_w * 2):
             draw.rectangle([sx, y - _sz(4), sx + stripe_w, y + _sz(4)], fill=BLACK)
         # Time label pill
-        _draw_time_pill(draw, x_end, y, now.strftime("%H:%M"), _font(26, bold=True))
+        _draw_time_pill(draw, x_end, y, now.strftime("%H:%M"), _font(28, bold=True))
         return
 
     y = grid_y + (now_min - ds_min) * minute_h
@@ -1429,7 +1429,7 @@ def _draw_time_line(draw, now, view_mode, day_start, day_end, events, time_forma
             draw.rectangle([sx, y - _sz(3), x2, y + _sz(3)], fill=BLACK)
 
     # Small time label at the right edge of the line
-    _draw_time_pill(draw, x_end, y, now.strftime("%H:%M"), _font(26, bold=True))
+    _draw_time_pill(draw, x_end, y, now.strftime("%H:%M"), _font(28, bold=True))
 
 
 # ---- QR code screen (initial setup) ----
