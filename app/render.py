@@ -528,10 +528,10 @@ def _render_month(draw, events, now, max_full_day, date_format="", dim_past_even
                         name += "…"
                     draw.text((x + 8 + time_w, ey), name, fill=ev_fill, font=event_font)
                 else:
-                    # All-day event — wrap summary to fit cell width
-                    wrapped = _wrap_text_lines(draw, ev["summary"], event_font, cell_avail_w)
-                    if wrapped:
-                        draw.text((x + 8, ey), wrapped[0], fill=ev_fill, font=event_font)
+                    # All-day event — syllable-wrap to fit cell width
+                    display = _fit_fd_text(draw, ev["summary"], event_font, cell_avail_w)
+                    if display:
+                        draw.text((x + 8, ey), display, fill=ev_fill, font=event_font)
                 ey += 26
                 ev_idx += 1
             if ev_idx < len(visible_events) and ey + 26 > y + row_h - 4:
@@ -699,9 +699,9 @@ def _render_35days(draw, events, now, max_full_day, date_format="", dim_past_eve
                         name += "…"
                     draw.text((x + 8 + time_w, ey), name, fill=ev_fill, font=event_font)
                 else:
-                    wrapped = _wrap_text_lines(draw, ev["summary"], event_font, cell_avail_w)
-                    if wrapped:
-                        draw.text((x + 8, ey), wrapped[0], fill=ev_fill, font=event_font)
+                    display = _fit_fd_text(draw, ev["summary"], event_font, cell_avail_w)
+                    if display:
+                        draw.text((x + 8, ey), display, fill=ev_fill, font=event_font)
                 ey += 26
                 ev_idx += 1
             remaining = len(visible_events) - ev_idx
@@ -1241,8 +1241,7 @@ def _render_day_grid(draw, events, now, ds_h, ds_m, de_h, de_m, max_full_day, ti
         x_end_col = grid_x + (col_end + 1) * col_w
         xl, xr = x_start + _sz(4), x_end_col - _sz(4)
         avail_fd_w = xr - xl - _sz(8)
-        wrapped = _wrap_text_lines(draw, label, fd_font, avail_fd_w)
-        display = wrapped[0] if wrapped else label[:15]
+        display = _fit_fd_text(draw, label, fd_font, avail_fd_w)
         if bw_mode:
             # Black bar with a 1px white border + white text (matches cards).
             draw.rectangle([xl, ey, xr, ey + fd_h - _sz(2)], fill=BLACK,
@@ -1284,6 +1283,28 @@ def _wrap_text_lines(draw, text, font, max_w):
     if current:
         lines.append(current)
     return lines
+
+
+def _fit_fd_text(draw, text, font, max_w):
+    """Wrap text to fit max_w, return first line with '…' if truncated.
+
+    Uses _wrap_text_lines (word + syllable hyphenation) so as much of the
+    title as possible is shown in the single-line all-day bar.
+    """
+    if not text:
+        return ""
+    wrapped = _wrap_text_lines(draw, text, font, max_w)
+    if not wrapped:
+        return text[:14] + "…"
+    display = wrapped[0]
+    if len(wrapped) > 1:
+        # Indicate truncation with ellipsis
+        if display.endswith("-"):
+            display = display[:-1]  # replace hyphen with ellipsis
+        while _text_w(draw, display + "…", font) > max_w and len(display) > 1:
+            display = display[:-1]
+        display += "…"
+    return display
 
 
 def _all_day_span_days(ev: dict) -> int:
