@@ -5,6 +5,10 @@ e-ink screen. It renders a 5-day view (black cards, white text, checkerboard for
 past events, dotted hour/day lines, current-time line) and publishes it as a
 single PNG the screen fetches over the internet.
 
+<p align="center">
+  <img src="docs/screen-photo.jpg" alt="The 5-day view rendered on the Invisible Computers e-ink screen" width="700">
+</p>
+
 > **Full code reference:** this project reuses the calendar/OAuth/render engine
 > from the original 1872×1404 e-ink calendar —
 > **https://github.com/sneakyjoeru/eink-calendar-1872x1404**. `app/render.py`,
